@@ -1,0 +1,23 @@
+/* Interaction corrections: the detail inspector is optional, not a permanent column. */
+.app { grid-template-columns: 320px minmax(0, 1fr); }
+.app.detail-open { grid-template-columns: 320px minmax(480px, 1fr) 370px; }
+.detail { display: none; }
+.app.detail-open .detail { display: block; }
+.records { flex: 0 1 auto; max-height: calc(100vh - 380px); min-height: 120px; }
+.record { padding-top: 11px; padding-bottom: 11px; }
+.timeline { grid-auto-rows: max-content; grid-auto-flow: row; min-height: 0; }
+.event { min-width: 0; padding-bottom: 16px; }
+.event:after { height: 12px; }
+.detail-title-row { display: flex; justify-content: space-between; gap: 12px; align-items: start; }
+.detail-close { border: 1px solid var(--line); background: #fff; color: var(--muted); cursor: pointer; width: 28px; height: 28px; line-height: 1; font-size: 18px; }
+.detail-close:hover { color: var(--teal); border-color: var(--teal); }
+.welcome[hidden] { display: none; }
+@media (max-width: 1150px) {
+  .app, .app.detail-open { grid-template-columns: 290px minmax(0, 1fr); }
+  .detail { display: none; }
+  .app.detail-open .detail { display: block; position: fixed; right: 0; top: 64px; bottom: 0; width: 360px; z-index: 8; box-shadow: var(--shadow); }
+}
+@media (max-width: 760px) {
+  .app, .app.detail-open { display: block; }
+  .app.detail-open .detail { width: 100%; }
+}

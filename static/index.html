@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>Agent Trace Explorer</title><link rel="stylesheet" href="/style.css"><link rel="stylesheet" href="/overrides.css">
+</head>
+<body>
+<header class="topbar"><div class="brand"><span class="brandmark">◈</span><div><strong>TRACE EXPLORER</strong><small>Agent Trajectories Dataset</small></div></div><div class="top-meta"><span class="live-dot"></span> LOCAL DATASET <span id="total-count">Loading</span></div></header>
+<div id="app" class="app">
+  <aside class="sidebar"><div class="sidebar-head"><div><span class="eyebrow">DATASET INDEX</span><h1>轨迹浏览</h1></div><span id="match-count" class="count">—</span></div>
+    <label class="search"><span>⌕</span><input id="search" placeholder="搜索任务、模型或 ID" aria-label="搜索轨迹"></label>
+    <div class="filters"><label>BENCHMARK<select id="benchmark"><option value="">全部基准</option></select></label><label>MODEL<select id="model"><option value="">全部模型</option></select></label><label>RESULT<select id="result"><option value="">全部结果</option><option value="success">成功 · binary</option><option value="failure">失败 · binary</option><option value="continuous">连续评分 · MCP</option></select></label></div>
+    <div class="list-heading"><span>轨迹列表</span><span>REWARD / TURNS</span></div><div id="records" class="records"><div class="empty">正在索引数据集...</div></div><div class="pagination"><button id="prev" title="上一页">←</button><span id="page-label">1</span><button id="next" title="下一页">→</button></div>
+  </aside>
+  <main class="workspace"><div id="welcome" class="welcome"><span class="eyebrow">TRAJECTORY WORKSPACE</span><h2>选择一条轨迹</h2><p>从左侧列表选择任务，查看完整的 agent 交互过程。</p></div><div id="viewer" hidden>
+    <section class="record-header"><div class="breadcrumb"><span id="rec-benchmark"></span><span>/</span><span id="rec-domain"></span><span>/</span><span id="rec-task"></span></div><div class="title-row"><div><h2 id="record-title"></h2><p id="record-id"></p></div><button id="export" class="export" title="导出当前轨迹的 SVG 概览">↓ <span>导出 SVG</span></button></div><div id="metrics" class="metrics"></div></section>
+    <section class="trace-area"><div class="trace-toolbar"><div><span class="eyebrow">INTERACTION TRACE</span><h3>交互时间线 <span id="event-count"></span></h3></div><div class="toolbar-actions"><button id="zoom-out" title="缩小" aria-label="缩小">−</button><span id="zoom-label">100%</span><button id="zoom-in" title="放大" aria-label="放大">+</button><button id="fit" title="重置缩放">重置</button></div></div><div class="lane-head"><span>CONTEXT</span><span>AGENT</span><span>TOOLS / ENVIRONMENT</span></div><div id="timeline-scroll" class="timeline-scroll"><div id="timeline" class="timeline"></div></div></section>
+    <section class="evaluation"><div><span class="eyebrow">OUTCOME</span><h3>评测结果</h3></div><div id="outcome"></div><button id="show-eval" class="text-button">查看完整评测数据 ↗</button></section>
+  </div></main>
+  <aside id="detail" class="detail" aria-label="步骤详情"><div class="detail-empty"><div class="detail-symbol">↗</div><h3>步骤详情</h3><p>选择时间线上的节点查看内容。</p></div></aside>
+</div><script src="/app.js"></script></body></html>
