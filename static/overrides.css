@@ -1,8 +1,8 @@
 /* Interaction corrections: the detail inspector is optional, not a permanent column. */
 .app { --sidebar-width: clamp(248px, 23vw, 320px); --detail-width: clamp(280px, 26vw, 420px); grid-template-columns: var(--sidebar-width) minmax(0, 1fr); }
 .app.detail-open { grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--detail-width); }
-.sidebar, .detail { position: relative; }
-.detail { display: none; }
+.sidebar { position: relative; }
+.detail { display: none; position: sticky; top: 64px; height: calc(100vh - 64px); align-self: start; }
 .app.detail-open .detail { display: block; }
 .detail-content { height: 100%; overflow: auto; }
 .sidebar-resizer, .detail-resizer { position: absolute; z-index: 5; top: 0; bottom: 0; width: 10px; cursor: col-resize; touch-action: none; }
@@ -118,7 +118,7 @@ body.is-resizing-panel { cursor: col-resize; user-select: none; }
 @media (max-width: 760px) { .record-actions { align-self: start; }.compare-button span { display: none; }.compare-header { padding: 18px 16px; display: block; }.compare-actions { margin-top: 13px; }.compare-legend { padding: 9px 16px; }.compare-scroll { padding: 16px; }.compare-choice { grid-template-columns: 20px 1fr 56px; }.compare-choice > span:nth-last-child(-n+2) { display: none; } }
 @media (max-width: 980px) {
   .app, .app.detail-open { grid-template-columns: clamp(230px, 30vw, 290px) minmax(0, 1fr); }
-  .detail { display: none; }
+  .detail { display: none; position: fixed; height: auto; }
   .app.detail-open .detail { display: block; position: fixed; right: 0; top: 64px; bottom: 0; width: var(--detail-width); z-index: 8; box-shadow: var(--shadow); }
   .sidebar-resizer, .detail-resizer { display: none; }
 }
