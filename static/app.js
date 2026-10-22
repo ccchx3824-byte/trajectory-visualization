@@ -6,7 +6,9 @@ const pretty = (value) => JSON.stringify(value, null, 2);
 const eventKind = (message) => message.role === 'tool' ? 'tool' : message.role === 'assistant' ? 'assistant' : message.role === 'user' ? 'user' : 'system';
 const laneFor = (message) => message.role === 'tool' ? 3 : message.role === 'assistant' ? 2 : 1;
 function inlineMarkdown(text) {
-  return text.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/__([^_]+)__/g, '<strong>$1</strong>').replace(/(?<!\*)\*(?!\s)([^*]*?\S)\*(?!\*)/g, '<em>$1</em>');
+  const formatted = text.replace(/`([^`]+)`/g, '<code>$1</code>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/__([^_]+)__/g, '<strong>$1</strong>').replace(/(?<!\*)\*(?!\s)([^*]*?\S)\*(?!\*)/g, '<em>$1</em>');
+  const evidence = { '评测器直接证据': 'evaluator', '轨迹直接证据': 'trace', '合理推断': 'inference', '无法从现有数据确定': 'unknown' };
+  return formatted.replace(/\[(评测器直接证据|轨迹直接证据|合理推断|无法从现有数据确定)\]/g, (_, label) => `<span class="evidence-badge ${evidence[label]}">${label}</span>`);
 }
 function renderMarkdown(value) {
   const mathBlocks = []; const protectedValue = String(value).replace(/\\\[([\s\S]*?)\\\]/g, (_, tex) => { const token = `@@MATHBLOCK${mathBlocks.length}@@`; mathBlocks.push(escape(`\\[${tex}\\]`)); return token; });
@@ -188,18 +190,58 @@ async function buildComparison(ids) {
   const records = await Promise.all(ids.map(async id => { const response = await fetch(`/api/record?id=${encodeURIComponent(id)}`); if (!response.ok) throw new Error('读取轨迹失败'); return response.json(); }));
   state.comparedRecords = records; renderComparison(records);
 }
+function alignmentScore(left, right) {
+  if (!left || !right) return -3;
+  if (left.role !== right.role) return -5;
+  let score = 2; const leftTools = (left.tool_calls || []).map(call => call.function?.name || ''); const rightTools = (right.tool_calls || []).map(call => call.function?.name || '');
+  if (leftTools.length || rightTools.length) score += leftTools.join(',') === rightTools.join(',') ? 5 : -2;
+  if (left.role === 'tool') score += left.name === right.name ? 4 : -2;
+  const leftText = String(left.content || '').replace(/\s+/g, ' ').trim().slice(0, 400).toLowerCase(); const rightText = String(right.content || '').replace(/\s+/g, ' ').trim().slice(0, 400).toLowerCase();
+  if (leftText === rightText) return score + 4;
+  if (!leftText || !rightText) return score;
+  const leftWords = new Set(leftText.split(' ')), rightWords = new Set(rightText.split(' ')); const overlap = [...leftWords].filter(word => rightWords.has(word)).length / Math.max(1, new Set([...leftWords, ...rightWords]).size);
+  return score + (overlap >= .5 ? 2 : overlap >= .2 ? 1 : 0);
+}
+function alignPairMessages(leftMessages, rightMessages) {
+  const rows = leftMessages.length, columns = rightMessages.length, gap = -3;
+  const scores = Array.from({ length: rows + 1 }, () => Array(columns + 1).fill(0)); const moves = Array.from({ length: rows + 1 }, () => Array(columns + 1).fill(''));
+  for (let row = 1; row <= rows; row += 1) { scores[row][0] = scores[row - 1][0] + gap; moves[row][0] = 'up'; }
+  for (let column = 1; column <= columns; column += 1) { scores[0][column] = scores[0][column - 1] + gap; moves[0][column] = 'left'; }
+  for (let row = 1; row <= rows; row += 1) for (let column = 1; column <= columns; column += 1) {
+    const options = [[scores[row - 1][column - 1] + alignmentScore(leftMessages[row - 1], rightMessages[column - 1]), 'diag'], [scores[row - 1][column] + gap, 'up'], [scores[row][column - 1] + gap, 'left']];
+    [scores[row][column], moves[row][column]] = options.reduce((best, option) => option[0] > best[0] ? option : best);
+  }
+  const aligned = []; let row = rows, column = columns;
+  while (row || column) { const move = moves[row][column]; if (move === 'diag') { aligned.push([row - 1, column - 1]); row -= 1; column -= 1; } else if (move === 'up') { aligned.push([row - 1, null]); row -= 1; } else { aligned.push([null, column - 1]); column -= 1; } }
+  return aligned.reverse();
+}
+function differenceCategory(messages) {
+  const roles = new Set(messages.filter(Boolean).map(message => message.role));
+  if (roles.size !== 1) return 'mixed'; const role = [...roles][0];
+  return role === 'user' ? 'external' : role === 'assistant' ? 'agent' : role === 'tool' ? 'environment' : 'system';
+}
+function comparisonRows(records) {
+  if (records.length === 2) return alignPairMessages(records[0].messages, records[1].messages).map((indexes, index) => {
+    const messages = indexes.map((messageIndex, traceIndex) => messageIndex == null ? null : records[traceIndex].messages[messageIndex]); const different = signature(messages[0]) !== signature(messages[1]);
+    return { index: index + 1, indexes, messages, different, category: different ? differenceCategory(messages) : 'same' };
+  });
+  const count = Math.max(...records.map(record => record.messages.length));
+  return Array.from({ length: count }, (_, index) => { const messages = records.map(record => record.messages[index] || null); return { index: index + 1, indexes: records.map(record => index < record.messages.length ? index : null), messages, different: new Set(messages.map(signature)).size > 1, category: differenceCategory(messages) }; });
+}
+function differenceLabel(row) { const steps = row.indexes.map(step => step == null ? '—' : `#${step + 1}`).join(' / '); const category = { external: '外部输入', agent: 'Agent 决策', environment: '工具/环境', system: '系统上下文', mixed: '消息类型' }[row.category] || '差异'; return `${category}差异 · ${steps}`; }
+function renderCompareCard(message, traceIndex, messageIndex, row) {
+  const diffClass = row.different ? `is-different difference-${row.category}` : '';
+  if (!message) return `<div class="compare-missing ${diffClass}">该轨迹在此处没有对应消息</div>`;
+  const preview = message.role === 'tool' ? message.content : message.content || (message.tool_calls?.map(call => call.function?.name).join(', ') || '');
+  return `<button type="button" class="compare-event ${diffClass} kind-${eventKind(message)}" data-compare-trace="${traceIndex}" data-compare-step="${messageIndex}"><span class="compare-event-role">#${messageIndex + 1} · ${escape(message.role.toUpperCase())}</span><strong>${escape(eventLabel(message))}</strong><small>${escape(clip(preview, 140))}</small></button>`;
+}
 function renderComparison(records) {
-  const maxSteps = Math.max(...records.map(record => record.messages.length));
-  const firstDiff = Array.from({ length: maxSteps }, (_, index) => index).find(index => new Set(records.map(record => signature(record.messages[index]))).size > 1);
-  const differences = Array.from({ length: maxSteps }, (_, index) => new Set(records.map(record => signature(record.messages[index]))).size > 1);
-  const stepScale = Array.from({ length: maxSteps }, (_, index) => `<span class="compare-scale-step ${differences[index] ? 'is-different' : ''}">#${index + 1}${differences[index] ? ' Δ' : ''}</span>`).join('');
-  const lanes = records.map((record, traceIndex) => {
-    const firstTraceDiff = differences.findIndex((different, index) => different && signature(record.messages[index]) !== signature(records[0].messages[index]));
-    const cards = Array.from({ length: maxSteps }, (_, index) => { const message = record.messages[index]; const differing = differences[index]; return message ? `<button type="button" class="compare-event ${differing ? 'is-different' : ''} kind-${eventKind(message)}" data-compare-trace="${traceIndex}" data-compare-step="${index}"><span class="compare-event-role">${escape(message.role.toUpperCase())}</span><strong>${escape(eventLabel(message))}</strong><small>${escape(clip(message.role === 'tool' ? message.content : message.content || (message.tool_calls?.map(call => call.function?.name).join(', ') || ''), 120))}</small></button>` : `<div class="compare-missing ${differing ? 'is-different' : ''}">此处结束</div>`; }).join('');
-    return `<div class="compare-lane" style="grid-template-columns:220px repeat(${maxSteps}, minmax(185px, 1fr));"><div class="compare-lane-head trace-color-${traceIndex % 6}"><span>${escape(record.source_model)}</span><b>pass ${record.pass}</b><small class="${record.benchmark === 'mcpbench' ? 'continuous' : record.reward === 1 ? 'success' : 'failure'}">${escape(scoreLabel(record))} · ${record.num_turns} 条消息</small><em>${firstTraceDiff < 0 ? '与基准轨迹一致' : `首处分歧：第 ${firstTraceDiff + 1} 步`}</em></div>${cards}</div>`;
-  }).join('');
-  const canAnalyzePair = records.length === 2;
-  $('compare-view').innerHTML = `<section class="compare-header"><div><span class="eyebrow">TRAJECTORY OVERLAY</span><h2>${escape(records[0].benchmark)} / ${escape(records[0].domain)} / ${escape(records[0].task_id)}</h2><p>已显示 ${records.length} 条选中轨迹 · 每条各占一行 · ${maxSteps} 个消息步骤 · ${firstDiff == null ? '所选消息完全一致' : `首处分歧：第 ${firstDiff + 1} 步`}</p></div><div class="compare-actions"><button id="ai-compare" class="compare-ai" type="button" ${canAnalyzePair ? '' : 'disabled'} title="${canAnalyzePair ? '分析两条轨迹的首次分歧、关键分歧与结果差异' : 'AI 对比分析需要恰好选择两条轨迹'}">AI 分析差异</button><button id="edit-comparison" type="button">调整选择</button><button id="close-comparison" type="button">返回单轨迹</button></div></section><section class="compare-legend"><span><i class="legend-dot same"></i>一致步骤</span><span><i class="legend-dot difference"></i>差异步骤</span><span>每一行都是一条已选轨迹；红色边框表示角色、工具调用、内容摘要或结束位置不同</span></section><div class="compare-scroll"><div class="compare-lanes" style="grid-template-columns:220px repeat(${maxSteps}, minmax(185px, 1fr));"><div class="compare-lane-scale">TRAJECTORY / STEP</div>${stepScale}${lanes}</div></div>`;
+  const rows = comparisonRows(records), firstDifference = rows.find(row => row.different), firstAgentDifference = rows.find(row => row.different && row.category === 'agent'); const canAnalyzePair = records.length === 2;
+  const heads = records.map((record, traceIndex) => `<div class="compare-trace-head trace-color-${traceIndex % 6}"><span>${escape(record.source_model)}</span><b>pass ${record.pass}</b><small class="${record.benchmark === 'mcpbench' ? 'continuous' : record.reward === 1 ? 'success' : 'failure'}">${escape(scoreLabel(record))} · ${record.num_turns} 条消息</small></div>`).join('');
+  const rowsHtml = rows.map(row => `<section class="compare-step-row ${row.different ? `has-difference difference-${row.category}` : ''}" style="--trace-count:${records.length}"><div class="compare-step-label"><b>对齐 ${row.index}</b>${row.different ? `<small>${escape(differenceLabel(row))}</small>` : '<small>一致</small>'}</div>${row.messages.map((message, traceIndex) => renderCompareCard(message, traceIndex, row.indexes[traceIndex], row)).join('')}</section>`).join('');
+  const alignmentText = records.length === 2 ? '已按角色、工具调用、工具名与内容相似度对齐' : '多轨迹按步骤概览对齐';
+  const summary = firstDifference ? `首处差异：${differenceLabel(firstDifference)}${firstAgentDifference ? ` · 首次 Agent 决策差异：${differenceLabel(firstAgentDifference)}` : ' · 尚未发现 Agent 决策差异'}` : '所选消息完全一致';
+  $('compare-view').innerHTML = `<section class="compare-header"><div><span class="eyebrow">TRAJECTORY COMPARISON</span><h2>${escape(records[0].benchmark)} / ${escape(records[0].domain)} / ${escape(records[0].task_id)}</h2><p>已显示 ${records.length} 条轨迹 · ${rows.length} 个对齐行 · ${alignmentText} · ${summary}</p></div><div class="compare-actions"><button id="ai-compare" class="compare-ai" type="button" ${canAnalyzePair ? '' : 'disabled'} title="${canAnalyzePair ? '分析两条轨迹的首次分歧、关键分歧与结果差异' : 'AI 对比分析需要恰好选择两条轨迹'}">AI 分析差异</button><button id="edit-comparison" type="button">调整选择</button><button id="close-comparison" type="button">返回单轨迹</button></div></section><section class="compare-legend"><span><i class="legend-dot same"></i>一致</span><span><i class="legend-dot external"></i>外部输入差异</span><span><i class="legend-dot agent"></i>Agent 决策差异</span><span><i class="legend-dot environment"></i>工具/环境差异</span></section><div class="compare-scroll"><div class="compare-vertical" style="--trace-count:${records.length}"><div class="compare-vertical-head"><div>对齐步骤</div>${heads}</div>${rowsHtml}</div></div>`;
   $('ai-compare').onclick = analyzeComparison; $('edit-comparison').onclick = renderComparePicker; $('close-comparison').onclick = closeComparison;
   document.querySelectorAll('.compare-event').forEach(node => node.onclick = () => selectComparisonEvent(records[Number(node.dataset.compareTrace)], Number(node.dataset.compareStep)));
 }

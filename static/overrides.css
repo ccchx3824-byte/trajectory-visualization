@@ -65,6 +65,23 @@ body.is-resizing-panel { cursor: col-resize; user-select: none; }
 .compare-lane-head { position: sticky; left: 0; z-index: 2; min-height: 76px; background: #fff; border: 1px solid var(--line); border-left: 4px solid var(--teal); padding: 9px; display: flex; flex-direction: column; gap: 2px; }
 .compare-lane-head span { font-size: 12px; font-weight: 650; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }.compare-lane-head b, .compare-lane-head small, .compare-lane-head em { font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }.compare-lane-head b { color: var(--muted); font-weight: 400; }.compare-lane-head em { color: var(--red); font-style: normal; margin-top: 2px; }
 .compare-lane-head.trace-color-1 { border-left-color: var(--blue); }.compare-lane-head.trace-color-2 { border-left-color: var(--orange); }.compare-lane-head.trace-color-3 { border-left-color: var(--violet); }.compare-lane-head.trace-color-4 { border-left-color: var(--red); }.compare-lane-head.trace-color-5 { border-left-color: #6c7b35; }
+.legend-dot.external { background: var(--blue); }.legend-dot.agent { background: var(--red); }.legend-dot.environment { background: var(--orange); }
+.compare-vertical { min-width: max-content; }
+.compare-vertical-head, .compare-step-row { display: grid; grid-template-columns: 104px repeat(var(--trace-count), minmax(285px, 1fr)); gap: 10px; }
+.compare-vertical-head { position: sticky; top: 0; z-index: 4; padding-bottom: 8px; background: var(--paper); border-bottom: 1px solid var(--line); }
+.compare-vertical-head > :first-child { padding: 11px 7px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 700; }
+.compare-vertical .compare-trace-head { min-height: 70px; background: #fff; border: 1px solid var(--line); border-top: 4px solid var(--teal); padding: 9px; }
+.compare-vertical .compare-trace-head.trace-color-1 { border-top-color: var(--blue); }.compare-vertical .compare-trace-head.trace-color-2 { border-top-color: var(--orange); }.compare-vertical .compare-trace-head.trace-color-3 { border-top-color: var(--violet); }.compare-vertical .compare-trace-head.trace-color-4 { border-top-color: var(--red); }.compare-vertical .compare-trace-head.trace-color-5 { border-top-color: #6c7b35; }
+.compare-step-row { padding: 10px 0; border-bottom: 1px solid #edf0ef; align-items: stretch; }
+.compare-step-row.has-difference { background: #fffafa; }
+.compare-step-label { padding: 10px 7px; color: var(--muted); font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.compare-step-label b { display: block; color: var(--ink); font-size: 11px; }.compare-step-label small { display: block; margin-top: 4px; line-height: 1.35; }
+.compare-step-row .compare-event, .compare-step-row .compare-missing { width: 100%; min-height: 88px; }
+.compare-step-row .compare-event.is-different.difference-external, .compare-step-row .compare-missing.is-different.difference-external { border-color: var(--blue); box-shadow: inset 3px 0 var(--blue); }
+.compare-step-row .compare-event.is-different.difference-agent, .compare-step-row .compare-missing.is-different.difference-agent { border-color: var(--red); box-shadow: inset 3px 0 var(--red); }
+.compare-step-row .compare-event.is-different.difference-environment, .compare-step-row .compare-missing.is-different.difference-environment { border-color: var(--orange); box-shadow: inset 3px 0 var(--orange); }
+.evidence-badge { display: inline-block; margin: 0 4px 2px 0; padding: 1px 5px; border: 1px solid currentColor; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; line-height: 1.45; white-space: nowrap; }
+.evidence-badge.evaluator { color: #17685a; background: var(--teal-soft); }.evidence-badge.trace { color: #1d5f90; background: var(--blue-soft); }.evidence-badge.inference { color: #84581d; background: var(--orange-soft); }.evidence-badge.unknown { color: #745f99; background: var(--violet-soft); }
 .compare-modal { position: fixed; inset: 0; background: rgba(23,38,45,.38); z-index: 20; display: grid; place-items: center; padding: 22px; }
 .compare-dialog { width: min(800px, 100%); max-height: min(760px, calc(100vh - 44px)); background: #fff; box-shadow: var(--shadow); display: flex; flex-direction: column; }
 .compare-dialog-head { display: flex; justify-content: space-between; gap: 16px; padding: 21px 22px 14px; border-bottom: 1px solid var(--line); }

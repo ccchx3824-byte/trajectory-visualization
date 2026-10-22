@@ -101,17 +101,96 @@ def message_signature(message):
     return f"{message.get('role')}|{tools}|{content}"
 
 
+def message_category(left, right):
+    message = left or right or {}
+    role = message.get('role')
+    if role == 'user':
+        return 'external_input'
+    if role == 'assistant':
+        return 'agent_decision'
+    if role == 'tool':
+        return 'environment_result'
+    return 'system_context'
+
+
+def alignment_score(left, right):
+    if left is None or right is None:
+        return -3
+    if left.get('role') != right.get('role'):
+        return -5
+    score = 2
+    left_tools = [call.get('function', {}).get('name', '') for call in left.get('tool_calls') or []]
+    right_tools = [call.get('function', {}).get('name', '') for call in right.get('tool_calls') or []]
+    if left_tools or right_tools:
+        score += 5 if left_tools == right_tools else -2
+    if left.get('role') == 'tool':
+        score += 4 if left.get('name') == right.get('name') else -2
+    left_content = ' '.join(str(left.get('content') or '').split())[:400]
+    right_content = ' '.join(str(right.get('content') or '').split())[:400]
+    if left_content == right_content:
+        score += 4
+    elif left_content and right_content:
+        left_words, right_words = set(left_content.lower().split()), set(right_content.lower().split())
+        overlap = len(left_words & right_words) / max(1, len(left_words | right_words))
+        score += 2 if overlap >= .5 else 1 if overlap >= .2 else 0
+    return score
+
+
+def align_messages(left_messages, right_messages):
+    """Needleman-Wunsch alignment prevents inserted turns from shifting all later comparisons."""
+    rows, columns, gap = len(left_messages), len(right_messages), -3
+    scores = [[0] * (columns + 1) for _ in range(rows + 1)]
+    moves = [[None] * (columns + 1) for _ in range(rows + 1)]
+    for row in range(1, rows + 1):
+        scores[row][0], moves[row][0] = scores[row - 1][0] + gap, 'up'
+    for column in range(1, columns + 1):
+        scores[0][column], moves[0][column] = scores[0][column - 1] + gap, 'left'
+    for row in range(1, rows + 1):
+        for column in range(1, columns + 1):
+            options = (
+                (scores[row - 1][column - 1] + alignment_score(left_messages[row - 1], right_messages[column - 1]), 'diag'),
+                (scores[row - 1][column] + gap, 'up'),
+                (scores[row][column - 1] + gap, 'left'),
+            )
+            scores[row][column], moves[row][column] = max(options, key=lambda option: option[0])
+    aligned = []
+    row, column = rows, columns
+    while row or column:
+        move = moves[row][column]
+        if move == 'diag':
+            aligned.append((row - 1, column - 1)); row -= 1; column -= 1
+        elif move == 'up':
+            aligned.append((row - 1, None)); row -= 1
+        else:
+            aligned.append((None, column - 1)); column -= 1
+    return list(reversed(aligned))
+
+
 def comparison_digest(records):
-    first_difference = None
-    max_steps = max(len(record.get('messages', [])) for record in records)
-    for index in range(max_steps):
-        if message_signature(records[0].get('messages', [])[index] if index < len(records[0].get('messages', [])) else None) != message_signature(records[1].get('messages', [])[index] if index < len(records[1].get('messages', [])) else None):
-            first_difference = index + 1
-            break
+    left_messages, right_messages = records[0].get('messages', []), records[1].get('messages', [])
+    aligned = align_messages(left_messages, right_messages)
+    differences = []
+    for aligned_row, (left_index, right_index) in enumerate(aligned, start=1):
+        left = left_messages[left_index] if left_index is not None else None
+        right = right_messages[right_index] if right_index is not None else None
+        if message_signature(left) != message_signature(right):
+            differences.append({
+                'aligned_row': aligned_row,
+                'trajectory_a_step': left_index + 1 if left_index is not None else None,
+                'trajectory_b_step': right_index + 1 if right_index is not None else None,
+                'category': message_category(left, right),
+            })
+    def first(category=None):
+        return next((difference for difference in differences if category is None or difference['category'] == category), None)
     return {
         'mechanical_comparison': {
-            'first_different_step': first_difference,
-            'note': 'This is a mechanical content/tool/role comparison. It is not itself proof of causal impact on the final result.',
+            'alignment': 'sequence alignment using role, tool calls, tool name, and bounded content similarity',
+            'first_any_difference': first(),
+            'first_external_input_difference': first('external_input'),
+            'first_agent_decision_difference': first('agent_decision'),
+            'first_environment_result_difference': first('environment_result'),
+            'difference_count': len(differences),
+            'note': 'Mechanical differences are evidence of divergence, not proof of causal impact on the final result.',
         },
         'trajectories': [trajectory_digest(record, budget=28000) for record in records],
     }
@@ -208,11 +287,13 @@ class Handler(BaseHTTPRequestHandler):
                     'Compare these two agent trajectories for the same task. Do not invent facts beyond the saved traces and evaluator data. '
                     'Write in Chinese and cite trajectory A/B plus exact step numbers. Your response must have these sections: '
                     '(1) result contrast: evaluator facts for each trajectory; '
-                    '(2) first divergence: verify the supplied mechanically detected first different step and explain the concrete difference; '
+                    '(2) first divergence: use the supplied sequence alignment, distinguish external-input, agent-decision, and environment-result differences, and explain the concrete difference; '
                     '(3) outcome-critical divergence: identify the earliest difference that materially explains why one result succeeded and the other failed, or say the evidence is insufficient; '
                     '(4) relationship: explicitly state whether the first divergence is the outcome-critical divergence. If not, explain the intervening differences and causal chain; '
                     '(5) actionable improvement for the weaker trajectory. '
-                    'Separate evaluator facts, trace facts, and causal inference.\n\n'
+                    'Every factual or causal bullet must begin with exactly one evidence label: [评测器直接证据], [轨迹直接证据], [合理推断], or [无法从现有数据确定]. '
+                    'Use [评测器直接证据] only for saved evaluator fields, [轨迹直接证据] only for observable messages/tool results, '
+                    '[合理推断] for causality supported but not proven by the trace, and [无法从现有数据确定] when the dataset cannot establish the claim.\n\n'
                     + json.dumps(digest, ensure_ascii=False)
                 )
             elif analysis_type == 'trajectory':
@@ -224,7 +305,10 @@ class Handler(BaseHTTPRequestHandler):
                     'Analyze why this agent trajectory succeeded or failed according to its saved evaluator data. '
                     'Do not invent facts beyond the trace. Write in Chinese. Structure the response with: '
                     '(1) verdict, (2) direct evaluator evidence, (3) causal trajectory analysis referencing step numbers and tool results, '
-                    '(4) concrete improvements. Distinguish evaluator facts from your inferences.\n\n'
+                    '(4) concrete improvements. Every factual or causal bullet must begin with exactly one evidence label: '
+                    '[评测器直接证据], [轨迹直接证据], [合理推断], or [无法从现有数据确定]. '
+                    'Use evaluator evidence only for saved evaluator fields, trace evidence only for observable messages/tool results, '
+                    'reasonable inference for causality supported but not proven, and unknown when the saved data cannot establish the claim.\n\n'
                     + json.dumps(digest, ensure_ascii=False)
                 )
             else:

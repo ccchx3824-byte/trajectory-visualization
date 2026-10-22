@@ -24,4 +24,6 @@ On a single-trajectory view, choose `AI 分析评测原因`. The local server re
 
 In a comparison view, select exactly two trajectories and choose `AI 分析差异`. It compares evaluator outcomes, identifies the mechanically detected first different message, then asks the model to distinguish that first divergence from the evidence-supported outcome-critical divergence. The analysis is cached for the current browser session by trajectory pair, provider URL, and model.
 
+The two-trajectory view uses sequence alignment based on message role, tool calls, tool names, and bounded content similarity, so inserted turns do not shift all later matches. Differences are marked as external input, agent decision, or tool/environment result. AI analyses label their claims as evaluator evidence, trace evidence, reasonable inference, or insufficient evidence.
+
 Interaction references: https://github.com/AR-FORUM/hodoscope and https://github.com/Slimshilin/ATIF-trajectory-viewer. No code from these projects is included.
