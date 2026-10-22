@@ -3,6 +3,8 @@
 import argparse
 import json
 import mimetypes
+import urllib.error
+import urllib.request
 from collections import Counter
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -37,6 +39,89 @@ def build_index(dataset):
 
 def public(item):
     return {key: value for key, value in item.items() if not key.startswith('_')}
+
+
+def load_record(item):
+    with item['_path'].open('rb') as stream:
+        stream.seek(item['_offset'])
+        return json.loads(stream.readline())
+
+
+def clipped(value, limit):
+    text = str(value or '').replace('\x00', '')
+    return text if len(text) <= limit else text[:limit] + '\n...[truncated]'
+
+
+def trajectory_digest(record, budget=65000):
+    """Create a bounded, evaluation-oriented representation for external analysis."""
+    messages = []
+    remaining = budget
+    for index, message in enumerate(record.get('messages', [])):
+        tools = [call.get('function', {}).get('name', '') for call in message.get('tool_calls', [])]
+        content_limit = min(1800 if message.get('role') in ('assistant', 'tool') else 900, max(0, remaining))
+        content = clipped(message.get('content'), content_limit) if content_limit else '[omitted after trajectory budget]'
+        remaining -= len(content)
+        messages.append({
+            'step': index + 1,
+            'role': message.get('role'),
+            'tool_calls': tools,
+            'tool_call_id': message.get('tool_call_id'),
+            'content': content,
+        })
+    detail = record.get('eval_details', {})
+    evaluation = {
+        'reward': record.get('reward'),
+        'benchmark': record.get('benchmark'),
+        'task_id': record.get('task_id'),
+        'status': detail.get('status'),
+        'resolved': detail.get('resolved'),
+        'test_passed': detail.get('test_passed'),
+        'note': clipped(detail.get('note'), 1000),
+        'test_output': clipped(detail.get('test_output'), 2400),
+        'predicted_answer': detail.get('predicted_answer'),
+        'golden_answer': detail.get('golden_answer'),
+        'numerical_match': detail.get('numerical_match'),
+        'llm_judge': detail.get('llm_judge'),
+        'search_score': detail.get('score'),
+        'reward_info': detail.get('reward_info'),
+        'mcp_evaluation': detail.get('evaluation'),
+    }
+    return {
+        'trajectory': {key: record.get(key) for key in ('id', 'benchmark', 'domain', 'task_id', 'source_model', 'pass', 'num_turns', 'reward')},
+        'evaluation': evaluation,
+        'messages': messages,
+    }
+
+
+def message_signature(message):
+    if message is None:
+        return 'missing'
+    tools = ','.join(call.get('function', {}).get('name', '') for call in message.get('tool_calls') or [])
+    content = ' '.join(str(message.get('content') or '').split())[:400]
+    return f"{message.get('role')}|{tools}|{content}"
+
+
+def comparison_digest(records):
+    first_difference = None
+    max_steps = max(len(record.get('messages', [])) for record in records)
+    for index in range(max_steps):
+        if message_signature(records[0].get('messages', [])[index] if index < len(records[0].get('messages', [])) else None) != message_signature(records[1].get('messages', [])[index] if index < len(records[1].get('messages', [])) else None):
+            first_difference = index + 1
+            break
+    return {
+        'mechanical_comparison': {
+            'first_different_step': first_difference,
+            'note': 'This is a mechanical content/tool/role comparison. It is not itself proof of causal impact on the final result.',
+        },
+        'trajectories': [trajectory_digest(record, budget=28000) for record in records],
+    }
+
+
+def chat_endpoint(base_url):
+    base = base_url.rstrip('/')
+    if base.endswith('/chat/completions'):
+        return base
+    return f'{base}/chat/completions' if base.endswith('/v1') else f'{base}/v1/chat/completions'
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -79,10 +164,98 @@ class Handler(BaseHTTPRequestHandler):
             with item['_path'].open('rb') as stream:
                 stream.seek(item['_offset'])
                 return self.send_json(json.loads(stream.readline()))
+        if url.path == '/api/task-traces':
+            required = ('benchmark', 'domain', 'task_id')
+            values = {key: params.get(key, [''])[0] for key in required}
+            if not all(values.values()):
+                return self.send_json({'error': 'benchmark, domain, and task_id are required'}, 400)
+            traces = [item for item in INDEX if all(item[key] == values[key] for key in required)]
+            traces.sort(key=lambda item: (item['source_model'], item['pass'], item['id']))
+            return self.send_json({'task': values, 'traces': [public(item) for item in traces]})
         files = {'/': 'index.html', '/app.js': 'app.js', '/style.css': 'style.css', '/overrides.css': 'overrides.css'}
         if url.path not in files: return self.send_json({'error': 'Not found'}, 404)
         path = ROOT / 'static' / files[url.path]
         return self.respond(200, path.read_bytes(), (mimetypes.guess_type(path.name)[0] or 'application/octet-stream') + '; charset=utf-8')
+
+    def do_POST(self):
+        url = urlparse(self.path)
+        if url.path != '/api/analyze':
+            return self.send_json({'error': 'Not found'}, 404)
+        try:
+            content_length = int(self.headers.get('Content-Length', '0'))
+            if content_length <= 0 or content_length > 65536:
+                raise ValueError('Invalid request size')
+            request_data = json.loads(self.rfile.read(content_length))
+            config = request_data.get('config') or {}
+            base_url = str(config.get('base_url') or '').strip()
+            api_key = str(config.get('api_key') or '').strip()
+            model = str(config.get('model') or '').strip()
+            if not base_url.startswith(('https://', 'http://')) or not api_key or not model:
+                raise ValueError('Base URL, API key, and model are required')
+            analysis_type = str(request_data.get('analysis_type') or 'trajectory')
+            if analysis_type == 'comparison':
+                record_ids = request_data.get('record_ids')
+                if not isinstance(record_ids, list) or len(record_ids) != 2 or len(set(record_ids)) != 2:
+                    raise ValueError('Exactly two distinct record_ids are required for comparison analysis')
+                items = [BY_ID.get(str(record_id)) for record_id in record_ids]
+                if any(item is None for item in items):
+                    raise ValueError('Record not found')
+                required = ('benchmark', 'domain', 'task_id')
+                if any(items[0][key] != items[1][key] for key in required):
+                    raise ValueError('Comparison records must belong to the same task')
+                digest = comparison_digest([load_record(item) for item in items])
+                prompt = (
+                    'Compare these two agent trajectories for the same task. Do not invent facts beyond the saved traces and evaluator data. '
+                    'Write in Chinese and cite trajectory A/B plus exact step numbers. Your response must have these sections: '
+                    '(1) result contrast: evaluator facts for each trajectory; '
+                    '(2) first divergence: verify the supplied mechanically detected first different step and explain the concrete difference; '
+                    '(3) outcome-critical divergence: identify the earliest difference that materially explains why one result succeeded and the other failed, or say the evidence is insufficient; '
+                    '(4) relationship: explicitly state whether the first divergence is the outcome-critical divergence. If not, explain the intervening differences and causal chain; '
+                    '(5) actionable improvement for the weaker trajectory. '
+                    'Separate evaluator facts, trace facts, and causal inference.\n\n'
+                    + json.dumps(digest, ensure_ascii=False)
+                )
+            elif analysis_type == 'trajectory':
+                item = BY_ID.get(str(request_data.get('record_id') or ''))
+                if item is None:
+                    raise ValueError('Record not found')
+                digest = trajectory_digest(load_record(item))
+                prompt = (
+                    'Analyze why this agent trajectory succeeded or failed according to its saved evaluator data. '
+                    'Do not invent facts beyond the trace. Write in Chinese. Structure the response with: '
+                    '(1) verdict, (2) direct evaluator evidence, (3) causal trajectory analysis referencing step numbers and tool results, '
+                    '(4) concrete improvements. Distinguish evaluator facts from your inferences.\n\n'
+                    + json.dumps(digest, ensure_ascii=False)
+                )
+            else:
+                raise ValueError('Unknown analysis type')
+            payload = json.dumps({
+                'model': model,
+                'temperature': 0.2,
+                'max_tokens': 2600,
+                'messages': [
+                    {'role': 'system', 'content': 'You are a rigorous agent-trajectory evaluator.'},
+                    {'role': 'user', 'content': prompt},
+                ],
+            }).encode()
+            outbound = urllib.request.Request(
+                chat_endpoint(base_url), data=payload,
+                headers={'Authorization': f'Bearer {api_key}', 'Content-Type': 'application/json'}, method='POST')
+            with urllib.request.urlopen(outbound, timeout=120) as response:
+                result = json.loads(response.read())
+            content = result.get('choices', [{}])[0].get('message', {}).get('content')
+            if isinstance(content, list):
+                content = ''.join(part.get('text', '') if isinstance(part, dict) else str(part) for part in content)
+            if not content:
+                raise ValueError('The provider returned no assistant content')
+            return self.send_json({'analysis': content, 'model': model})
+        except urllib.error.HTTPError as error:
+            body = error.read().decode(errors='replace')[:1000]
+            return self.send_json({'error': f'Provider returned HTTP {error.code}: {body}'}, 502)
+        except (urllib.error.URLError, TimeoutError) as error:
+            return self.send_json({'error': f'Provider request failed: {error}'}, 502)
+        except (ValueError, json.JSONDecodeError) as error:
+            return self.send_json({'error': str(error)}, 400)
 
 
 if __name__ == '__main__':
